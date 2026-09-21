@@ -491,6 +491,37 @@ elif page=="Data Health":
             else: st.info("No corporate actions match filter. Add via app/data/corporate_actions.py or ingest.")
         except Exception as e: human_error("Corporate actions query failed", str(e))
         st.divider()
+        st.subheader("Survivorship — Historical Universe")
+        try:
+            from app.data.universe import get_universe, list_snapshots, create_snapshot
+            # demo as_of
+            demo_date = st.text_input("Historical universe as_of (YYYY-MM-DD)", "2021-12-31", key="surv_asof")
+            prov_choice = st.session_state.provider
+            uni = get_universe(demo_date, provider_name=prov_choice)
+            st.write(f"Eligible at {demo_date}: {len(uni)} securities")
+            if uni:
+                dfu = pd.DataFrame([{"symbol":c.symbol, "listed":c.listed_date or "unknown", "delisted":c.delisted_date or "—", "status":c.status} for c in uni[:20]])
+                st.dataframe(dfu, width='stretch')
+                st.caption("Rule: listed_date ≤ as_of and (delisted_date is NULL or > as_of). Inclusive listed, exclusive delisted. PENNY (2022-06-15) not eligible on 2021-12-31; MIDCAP delisted 2024-08-20 not eligible on 2024-08-20+.")
+            else: st.info("No eligible securities at that date (survivorship correctly filtered).")
+            # snapshots
+            snaps = list_snapshots()
+            if snaps:
+                st.dataframe(pd.DataFrame(snaps), width='stretch')
+            else: st.caption("No snapshots yet — snapshots are deterministic: same definition+as_of+version → same hash.")
+            if st.button("Create snapshot for as_of"):
+                sid = create_snapshot(demo_date, provider_name=prov_choice)
+                st.success(f"Snapshot {sid} created")
+            # symbol history
+            try:
+                from app.data.symbol_history import list_history
+                hist_sym = st.text_input("Security_id for symbol history", "RELIANCE", key="sym_hist")
+                hist = list_history(hist_sym)
+                if hist: st.dataframe(pd.DataFrame(hist), width='stretch')
+                else: st.caption("No symbol history — abstraction ready, mock data has no renames (documented limitation).")
+            except: pass
+        except Exception as e: st.info(f"Survivorship unavailable: {e}")
+        st.divider()
         st.subheader("System events (recent)")
         try:
             evs=conn.execute("SELECT timestamp, level, message FROM system_events ORDER BY timestamp DESC LIMIT 10").fetchall()
@@ -517,6 +548,10 @@ elif page=="System":
     except: checks.append(("Groq", False))
     checks.append(("Backtesting engine", True))
     checks.append(("Paper portfolio", True))
+    try: from app.data.universe import get_universe; get_universe("2021-12-31"); checks.append(("Survivorship protection", True))
+    except: checks.append(("Survivorship protection", False))
+    try: from app.data.symbol_history import get_symbol_at; checks.append(("Symbol history", True))
+    except: checks.append(("Symbol history", False))
     for i,(name,val) in enumerate(checks):
         with cols[i%3]: st.metric(name, ok(val))
     st.divider()

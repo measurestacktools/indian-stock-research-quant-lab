@@ -7,8 +7,10 @@ logger = logging.getLogger(__name__)
 YF_UNIVERSE_SYMBOLS = ["RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","BHARTIARTL","ITC","LT","MARUTI","WIPRO","AXISBANK","KOTAKBANK","BAJFINANCE","HINDUNILVR","ASIANPAINT","TITAN","ULTRACEMCO","NESTLEIND","POWERGRID"]
 
 class YFinanceProvider(DataProvider):
-    def get_universe(self):
-        return [Company(s, s, exchange="NSE") for s in YF_UNIVERSE_SYMBOLS]
+    def get_universe(self, as_of=None):
+        # YFinance has no historical listed/delisted dates; return full universe
+        # survivorship handled via DB layer when dates are populated
+        return [Company(s, s, exchange="NSE", listed_date="2000-01-01", security_id=s) for s in YF_UNIVERSE_SYMBOLS]
     def get_daily_prices(self, symbol, start, end):
         try:
             import yfinance as yf

@@ -4,8 +4,10 @@ from app.config.settings import get_db_path
 
 SCHEMA = '''
 PRAGMA journal_mode=WAL;
-CREATE TABLE IF NOT EXISTS companies(symbol TEXT PRIMARY KEY, name TEXT, exchange TEXT, isin TEXT, sector TEXT, industry TEXT, security_type TEXT, status TEXT);
-CREATE TABLE IF NOT EXISTS securities(id INTEGER PRIMARY KEY, company_id TEXT, symbol TEXT, exchange TEXT, type TEXT, status TEXT);
+CREATE TABLE IF NOT EXISTS companies(symbol TEXT PRIMARY KEY, name TEXT, exchange TEXT, isin TEXT, sector TEXT, industry TEXT, security_type TEXT, status TEXT, security_id TEXT, company_id TEXT, listed_date TEXT, delisted_date TEXT, source TEXT, retrieved_at TEXT, data_version TEXT);
+CREATE TABLE IF NOT EXISTS securities(id INTEGER PRIMARY KEY, company_id TEXT, symbol TEXT, exchange TEXT, type TEXT, status TEXT, security_id TEXT, listed_date TEXT, delisted_date TEXT, source TEXT, retrieved_at TEXT, data_version TEXT);
+CREATE TABLE IF NOT EXISTS security_symbols(security_id TEXT, symbol TEXT, start_date TEXT, end_date TEXT, source TEXT, PRIMARY KEY(security_id, symbol, start_date));
+CREATE TABLE IF NOT EXISTS universe_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT, snapshot_id TEXT, as_of TEXT, universe_definition TEXT, security_id TEXT, symbol TEXT, exchange TEXT, listed_date TEXT, delisted_date TEXT, source TEXT, created_at TEXT, data_version TEXT, hash TEXT, UNIQUE(snapshot_id, symbol));
 CREATE TABLE IF NOT EXISTS prices_daily(id INTEGER PRIMARY KEY, symbol TEXT, date TEXT, open REAL, high REAL, low REAL, close REAL, volume INTEGER, source TEXT, retrieved_at TEXT, hash TEXT, UNIQUE(symbol,date));
 CREATE TABLE IF NOT EXISTS fundamentals(symbol TEXT, period TEXT, available_at TEXT, retrieved_at TEXT, source TEXT, hash TEXT, data_version TEXT, revenue REAL, profit REAL, eps REAL, roe REAL, roce REAL, debt_equity REAL, pe REAL, pb REAL, market_cap REAL, transform_hash TEXT, PRIMARY KEY(symbol, period, available_at));
 CREATE TABLE IF NOT EXISTS corporate_actions(id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, action_type TEXT, ex_date TEXT, record_date TEXT, payment_date TEXT, ratio_numerator REAL, ratio_denominator REAL, cash_amount REAL, currency TEXT DEFAULT 'INR', adjustment_factor REAL, source TEXT, retrieved_at TEXT, raw_hash TEXT, data_version TEXT DEFAULT 'v1', UNIQUE(symbol, action_type, ex_date, ratio_numerator, ratio_denominator, cash_amount));
@@ -26,6 +28,8 @@ CREATE INDEX IF NOT EXISTS idx_feat_sym_date ON features_daily(symbol,date);
 CREATE INDEX IF NOT EXISTS idx_screen_run ON screening_results(run_id);
 CREATE INDEX IF NOT EXISTS idx_fund_symbol_avail ON fundamentals(symbol, available_at);
 CREATE INDEX IF NOT EXISTS idx_ca_symbol_ex ON corporate_actions(symbol, ex_date);
+CREATE INDEX IF NOT EXISTS idx_companies_listed ON companies(listed_date, delisted_date);
+CREATE INDEX IF NOT EXISTS idx_universe_as_of ON universe_snapshots(as_of, universe_definition);
 '''
 
 PIT_VIEW_SQL = '''
@@ -116,14 +120,48 @@ def _migrate_legacy_corporate_actions(conn):
         except Exception:
             pass
 
+def _migrate_security_lifecycle(conn):
+    # add new columns to companies/securities if missing
+    for table in ["companies", "securities"]:
+        for col, coldef in [
+            ("security_id", "TEXT"),
+            ("company_id", "TEXT"),
+            ("listed_date", "TEXT"),
+            ("delisted_date", "TEXT"),
+            ("source", "TEXT"),
+            ("retrieved_at", "TEXT"),
+            ("data_version", "TEXT"),
+        ]:
+            if not _table_has_column(conn, table, col):
+                try: conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coldef}")
+                except: pass
+    # also ensure companies has correct PK still symbol; no need to recreate
+
+def _migrate_universe_snapshots(conn):
+    # fix wrong PK (snapshot_id alone) -> needs (snapshot_id, symbol)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(universe_snapshots)").fetchall()]
+        if cols and "id" not in cols:
+            # old schema with snapshot_id as PK, drop and recreate
+            conn.execute("DROP TABLE IF EXISTS universe_snapshots")
+            conn.execute("""
+            CREATE TABLE universe_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT, snapshot_id TEXT, as_of TEXT, universe_definition TEXT, security_id TEXT, symbol TEXT, exchange TEXT, listed_date TEXT, delisted_date TEXT, source TEXT, created_at TEXT, data_version TEXT, hash TEXT, UNIQUE(snapshot_id, symbol));
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_universe_as_of ON universe_snapshots(as_of, universe_definition)")
+    except: pass
+
 def init_db(db_path=None):
     conn = get_conn(db_path)
-    # run migrations before creating new schema? Check legacy first
-    # need to ensure we don't fail if tables already new
+    # migrations that must run before SCHEMA (add columns, fix PK)
+    try: _migrate_security_lifecycle(conn)
+    except: pass
+    try: _migrate_universe_snapshots(conn)
+    except: pass
     try:
         _migrate_legacy_fundamentals(conn)
     except Exception as e:
-        conn.execute("INSERT INTO system_events(timestamp, level, message, context_json) VALUES(datetime('now'),'WARN','fundamentals migration failed','{}')")
+        try: conn.execute("INSERT INTO system_events(timestamp, level, message, context_json) VALUES(datetime('now'),'WARN','fundamentals migration failed','{}')")
+        except: pass
     try:
         _migrate_legacy_corporate_actions(conn)
     except Exception:

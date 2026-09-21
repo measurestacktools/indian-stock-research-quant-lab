@@ -10,16 +10,35 @@ class BacktestConfig:
     brokerage_pct: float=0.001
     slippage_pct: float=0.001
 
-def backtest_symbol(df: pd.DataFrame, config: BacktestConfig, symbol: str = None, use_pit_fundamentals: bool = False, pit_callback=None):
+def _is_in_universe(symbol: str, as_of: str, universe_callback) -> bool:
+    if universe_callback is None: return True
+    try:
+        eligible = universe_callback(as_of)
+        # callback may return List[Company] or List[str] or List[dict]
+        if not eligible: return False
+        # normalize to symbols
+        syms = set()
+        for e in eligible:
+            if isinstance(e, str): syms.add(e)
+            elif isinstance(e, dict): syms.add(e.get("symbol") or e.get("security_id"))
+            else: syms.add(getattr(e, "symbol", str(e)))
+        return symbol in syms
+    except: return True
+
+def backtest_symbol(df: pd.DataFrame, config: BacktestConfig, symbol: str = None, use_pit_fundamentals: bool = False, pit_callback=None, universe_callback=None):
     """
     Backtest at time T uses only data <=T.
     If use_pit_fundamentals True, fundamental signal at T uses get_fundamentals_as_of(T)
     (available_at <= T), never period <= T.
 
+    Survivorship: if universe_callback provided, symbol must be in get_universe(as_of=T) to generate signal/execution.
+    inclusive listed_date, exclusive delisted_date handled by universe layer.
+
     Args:
         df: price dataframe with date, open, high, low, close, volume (already corporate-action adjusted if needed)
-        symbol: required when use_pit_fundamentals True to query PIT
+        symbol: required when use_pit_fundamentals True or survivorship to query PIT/universe
         pit_callback: optional function (symbol, as_of_str) -> dict | None. Defaults to app.data.fundamentals.get_fundamentals_as_of
+        universe_callback: optional function (as_of_str) -> List[Company] (e.g., lambda d: get_universe(as_of=d))
     """
     # NO LOOKAHEAD: at date T, only use data <=T
     df=df.sort_values("date").copy().reset_index(drop=True)
@@ -55,14 +74,39 @@ def backtest_symbol(df: pd.DataFrame, config: BacktestConfig, symbol: str = None
                 # example: if fundamentals show roe <12, could veto signal
                 # keep pit_ok True for baseline momentum; fundamental-gated variant can check here
                 pass
-        signal = (mom > config.entry_momentum if pd.notna(mom) else False) and pit_ok
+        # survivorship: symbol must be in universe at as_of
+        universe_ok = True
+        if symbol and universe_callback:
+            as_of_u = str(row["date"])[:10]
+            universe_ok = _is_in_universe(symbol, as_of_u, universe_callback)
+            if not universe_ok:
+                pit_ok = False  # not eligible, cannot signal
+        signal = (mom > config.entry_momentum if pd.notna(mom) else False) and pit_ok and universe_ok
         if position is None and signal:
+            # also check universe at entry date T+1? Must be eligible at entry
+            if symbol and universe_callback:
+                entry_as_of = str(df.iloc[i+1]["date"])[:10]
+                if not _is_in_universe(symbol, entry_as_of, universe_callback):
+                    continue
             # enter next open (T+1)
             nxt = df.iloc[i+1]
             entry_price = nxt["open"] * (1+config.slippage_pct)
             entry_date = nxt["date"]
             position={"entry_idx":i+1,"price":entry_price,"date":entry_date, "mom":mom}
         elif position is not None:
+            # if delisted during holding, force exit at delisting
+            if symbol and universe_callback:
+                cur_as_of = str(row["date"])[:10]
+                if not _is_in_universe(symbol, cur_as_of, universe_callback):
+                    # delisted — exit at current open
+                    exit_price = row["open"] * (1- config.slippage_pct)
+                    exit_date = row["date"]
+                    buy_cost = position["price"]*config.brokerage_pct
+                    sell_cost = exit_price*config.brokerage_pct
+                    pnl = exit_price - position["price"] - buy_cost - sell_cost
+                    trades.append({"entry_date":str(position["date"]),"exit_date":str(exit_date),"entry_price":float(position["price"]),"exit_price":float(exit_price),"pnl":float(pnl),"return":float(pnl/position["price"]),"holding":int(i - position["entry_idx"]), "exit_reason":"delisted"})
+                    position=None
+                    continue
             # check exit: holding period or stop
             holding = i - position["entry_idx"]
             cur_close = row["close"]

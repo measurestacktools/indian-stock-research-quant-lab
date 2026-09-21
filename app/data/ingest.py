@@ -14,10 +14,14 @@ def ingest(provider_name="mock", symbols=None, start="2023-01-01", end=None, db_
     conn = init_db(db_path)
     universe = provider.get_universe()
     if symbols: universe = [c for c in universe if c.symbol in symbols]
-    # upsert companies
+    # upsert companies with lifecycle
     for c in universe:
-        conn.execute("INSERT OR REPLACE INTO companies(symbol,name,exchange,isin,sector,industry,security_type,status) VALUES(?,?,?,?,?,?,?,?)",
-                     (c.symbol,c.name,c.exchange,c.isin,c.sector,c.industry,c.security_type,c.status))
+        conn.execute("""
+            INSERT OR REPLACE INTO companies(symbol,name,exchange,isin,sector,industry,security_type,status,security_id,company_id,listed_date,delisted_date,source,retrieved_at,data_version)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (c.symbol,c.name,c.exchange,c.isin,c.sector,c.industry,c.security_type,c.status,
+              getattr(c,'security_id',c.symbol), getattr(c,'company_id',c.symbol), getattr(c,'listed_date',None), getattr(c,'delisted_date',None),
+              getattr(c,'source','manual'), getattr(c,'retrieved_at',datetime.datetime.utcnow().isoformat()), getattr(c,'data_version','v1')))
     conn.commit()
     total=0
     for c in universe:

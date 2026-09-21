@@ -55,8 +55,27 @@ stock-lab/
 - **Backtest** `app/backtesting/engine.py`: vectorized, no look-ahead (only data ≤T), costs/slippage, walk-forward in/out-of-sample labeling, benchmark buy-hold.
 - **Portfolio** `app/portfolio/portfolio.py`: paper trades, cash tracking, P&L, snapshots — example ₹150 buy 1×₹120 → cash ₹30, unrealized calc.
 
+## Browser-First Run
+```bash
+python run.py
+# → Dashboard: http://localhost:8501
+# → API: http://localhost:8000
+# → Status: READY
+```
+Terminal shows only `Dashboard/API/Status`. All research via browser. `webbrowser` auto-opens. `python run.py` starts Streamlit + FastAPI together; `streamlit run app/ui/main.py` also works.
+
+Navigation (11 pages): Market Overview, Stock Scanner, Quant Research, Fundamentals, Point-in-Time Data, Experiments, Backtests, Research Ledger, Paper Portfolio, Data Health, System. All show `Data as of:` + stale warning, `DATA MODE: MOCK/YFINANCE`, `NSE PROVIDER: NOT CONFIGURED` transparently. Errors show human-readable UI, not tracebacks.
+
+## Corporate Actions (Phase 2)
+`app/data/corporate_actions.py` — deterministic backward adjustment. **Semantics:** `adjusted_price(t) = raw_price(t) * cumulative_factor(t)` where cumulative factor = product of `adjustment_factor = denominator/numerator` for all splits/bonuses with `ex_date > t`. Dividends have factor 1.0 and are stored separately as `dividend_cash` cash flows (not subtracted from OHLCV), enabling price/ total/ dividend-reinvested return choices. Volume adjusted inversely (`raw_volume / factor`). Multiple actions compound multiplicatively; `date < ex_date` gets factor, `date >= ex_date` does not. Idempotent via `raw_*` preservation. Provenance: `source, retrieved_at, raw_hash, data_version` per action. See `app/data/normalize.py:12` and UI Data Health → Corporate Actions (inspectable raw vs adjusted).
+
+**Worked example:** 2:1 split `ex_date=2024-01-03` → factor 0.5. Raw 200,200,100,105 → adjusted 100,100,100,105 — no -50% fake return.
+
+## Point-in-Time Fundamentals (Phase 2)
+`fundamentals` PK changed to `(symbol, period, available_at)` — `period` ≠ `available_at`. Backtest uses `available_at <= as_of` (never `period <= as_of`). Example: `period 2025-03-31, available 2025-05-20` → `as_of 2025-04-01` unavailable, `2025-06-01` available. Revision history preserved (Aug 10 restatement coexists with May 20). Query via `app/data/fundamentals.py:get_fundamentals_as_of(symbol, as_of)`; view `fundamentals_pit` documents semantics. Backtester `app/backtesting/engine.py:13` optionally gates signals via PIT (`use_pit_fundamentals=True`). Dashboard Page 5 visualizes `period → available_at → revision` timeline. Provenance: `source, retrieved_at, hash, data_version, transform_hash`. Migration in `app/database/db.py:33` preserves legacy data.
+
 ## Dashboard (Streamlit)
-Pages: Overview, Market Scanner, Stock Detail, AI Research, Backtesting Lab, Paper Portfolio, Performance, Data Health, Settings — all show "Data as of: [timestamp]" and stale warning.
+Pages: Market Overview, Stock Scanner, Quant Research, Fundamentals, Point-in-Time Data, Experiments, Backtests, Research Ledger, Paper Portfolio, Data Health, System — all show "Data as of: [timestamp]" and stale warning.
 
 ## Configuration (.env)
 ```

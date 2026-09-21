@@ -1,0 +1,1 @@
+import streamlit as st; st.title('Stock Detail'); st.write('Use main page')

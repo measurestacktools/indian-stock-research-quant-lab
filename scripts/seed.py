@@ -1,0 +1,1 @@
+from app.data.ingest import ingest; ingest('mock')

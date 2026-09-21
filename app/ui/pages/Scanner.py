@@ -1,0 +1,1 @@
+import streamlit as st; st.title('Scanner'); st.write('Use main page Run Scanner')

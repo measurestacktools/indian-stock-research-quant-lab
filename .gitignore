@@ -1,0 +1,10 @@
+.env
+data/raw/
+data/processed/
+data/cache/
+__pycache__/
+*.pyc
+.venv/
+stock_lab.db
+*.db
+.streamlit/
